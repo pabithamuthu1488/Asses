@@ -1,121 +1,113 @@
-import sys
-!{sys.executable} -m pip install streamlit
-!{sys.executable} -m pip install transformers
+import os
+
 import streamlit as st
-from transformers import pipeline
 
-# -----------------------------
-# Page Configuration
-# -----------------------------
-st.set_page_config(
-    page_title="International Business Marketing Prompt App",
-    page_icon="🌍",
-    layout="centered"
-)
 
-# -----------------------------
-# Load Model
-# -----------------------------
-@st.cache_resource
-def load_model():
-    generator = pipeline(
+DEFAULT_MODEL = "HuggingFaceTB/SmolLM2-360M-Instruct"
+
+
+st.set_page_config(page_title="Hugging Face Chatbot")
+
+
+@st.cache_resource(show_spinner="Loading Hugging Face model...")
+def get_llm(model_id):
+    from transformers import AutoTokenizer, pipeline
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    text_generator = pipeline(
         "text-generation",
-        model="HuggingFaceTB/SmolLM2-360M-Instruct"
+        model=model_id,
+        tokenizer=tokenizer,
     )
-    return generator
 
-generator = load_model()
+    return text_generator, tokenizer
 
-# -----------------------------
-# App Title
-# -----------------------------
-st.title("🌍 International Business Marketing Prompt Application")
 
-st.markdown("""
-This AI application generates:
+def build_prompt(messages, tokenizer):
+    if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
-- ✅ Global-Ready Product Title  
-- ✅ Powerful Marketing Slogan  
-- ✅ Advertising Description from 3 Expert Perspectives  
+    prompt_parts = []
+    for message in messages:
+        role = "User" if message["role"] == "user" else "Assistant"
+        prompt_parts.append(f"{role}: {message['content']}")
+    prompt_parts.append("Assistant:")
 
-using Generative AI and Prompt Engineering.
-""")
+    return "\n".join(prompt_parts)
 
-# -----------------------------
-# User Input
-# -----------------------------
-product_name = st.text_input(
-    "Enter Product Name",
-    placeholder="Example: Smart Water Bottle"
-)
 
-generate_btn = st.button("Generate Marketing Content")
+def generate_assistant_response(messages, model_id, max_new_tokens, temperature):
+    llm, tokenizer = get_llm(model_id)
+    prompt = build_prompt(messages, tokenizer)
 
-# -----------------------------
-# Prompt Template
-# -----------------------------
-def create_prompt(product):
-    return f"""
-You are an international business marketing expert.
+    response_output = llm(
+        prompt,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        do_sample=temperature > 0,
+        return_full_text=False,
+        pad_token_id=tokenizer.eos_token_id,
+    )
 
-Generate professional global marketing content for the product: "{product}"
+    assistant_new_text = response_output[0]["generated_text"].strip()
+    full_conversation_list = messages + [
+        {"role": "assistant", "content": assistant_new_text}
+    ]
 
-Requirements:
-1. Create a global-ready product title.
-2. Create a powerful emotional marketing slogan.
-3. Write advertising descriptions from THREE expert perspectives:
-   - Luxury Brand Expert
-   - Digital Marketing Expert
-   - Emotional Storytelling Expert
+    return assistant_new_text, full_conversation_list
 
-The response should:
-- Follow international marketing standards
-- Be persuasive and professional
-- Appeal to global audiences
-- Use emotional engagement strategies
-- Be suitable for advertising campaigns
 
-Format:
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-Global Product Title:
-...
 
-Marketing Slogan:
-...
+st.title("Hugging Face Chatbot")
 
-1. Luxury Brand Expert:
-...
+with st.sidebar:
+    st.header("Model")
+    model_id = st.text_input(
+        "Model ID",
+        value=os.getenv("HF_MODEL_ID", DEFAULT_MODEL),
+        help="Use any Hugging Face text-generation or instruct model.",
+    )
+    max_new_tokens = st.slider("Max new tokens", 32, 512, 160, 16)
+    temperature = st.slider("Temperature", 0.0, 1.5, 0.7, 0.1)
 
-2. Digital Marketing Expert:
-...
+    if st.button("Clear chat"):
+        st.session_state.messages = []
+        st.rerun()
 
-3. Emotional Storytelling Expert:
-...
-"""
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-# -----------------------------
-# Generate Content
-# -----------------------------
-if generate_btn:
 
-    if product_name.strip() == "":
-        st.warning("Please enter a product name.")
-    else:
+user_input = st.chat_input("Type a message")
 
-        prompt = create_prompt(product_name)
+if user_input:
+    st.session_state.messages.append({"role": "user", "content": user_input})
 
-        with st.spinner("Generating global marketing content..."):
+    with st.chat_message("user"):
+        st.markdown(user_input)
 
-            result = generator(
-                prompt,
-                max_new_tokens=400,
-                temperature=0.8,
-                do_sample=True
-            )
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
+                assistant_text, updated_messages = generate_assistant_response(
+                    st.session_state.messages,
+                    model_id,
+                    max_new_tokens,
+                    temperature,
+                )
+            except Exception as exc:
+                assistant_text = f"Model error: {exc}"
+                updated_messages = st.session_state.messages + [
+                    {"role": "assistant", "content": assistant_text}
+                ]
+        st.markdown(assistant_text)
 
-            output = result[0]["generated_text"]
-
-        st.success("Marketing Content Generated Successfully!")
-
-        st.markdown("## ✨ Generated Content")
-        st.write(output)
+    st.session_state.messages = updated_messages
